@@ -164,7 +164,12 @@ def get_cqt(inputs: tf.Tensor, n_harmonics: int, use_batchnorm: bool) -> tf.Tens
         bins_per_octave=12 * CONTOURS_BINS_PER_SEMITONE,
     )(x)
     x = signal.NormalizedLog()(x)
-    x = tf.expand_dims(x, -1)
+    # Wrap tf.expand_dims in a custom Keras layer
+    class ExpandDimsLayer(tf.keras.layers.Layer):
+        def call(self, inputs):
+            return tf.expand_dims(inputs, -1)
+    
+    x = ExpandDimsLayer()(x)
     if use_batchnorm:
         x = tfkl.BatchNormalization()(x)
     return x
@@ -240,7 +245,7 @@ def model(
         x_contours = nn.FlattenFreqCh(name=contour_name)(x_contours)  # contour output
 
         # reduced contour output as input to notes
-        x_contours_reduced = tf.expand_dims(x_contours, -1)
+        x_contours_reduced = tfkl.Lambda(lambda x: tf.expand_dims(x, -1))(x_contours)
     else:
         x_contours_reduced = x_contours
 

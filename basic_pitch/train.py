@@ -17,9 +17,12 @@
 
 import argparse
 import os
+import sys
 import logging
 from datetime import datetime, timezone
 from typing import List
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import tensorflow as tf
@@ -93,12 +96,12 @@ def main(
         input_shape[0] = batch_size
     logging.info("input_shape" + str(input_shape))
 
-    output_shape = model.output_shape
-    for k, v in output_shape.items():
-        output_shape[k] = list(v)
-        if v[0] is None:
-            output_shape[k][0] = batch_size
-    logging.info("output_shape" + str(output_shape))
+    # output_shape = model.output_shape
+    # for k, v in output_shape.items():
+    #     output_shape[k] = list(v)
+    #     if v[0] is None:
+    #         output_shape[k][0] = batch_size
+    # logging.info("output_shape" + str(output_shape))
     # data loaders
     train_ds, validation_ds = tf_example_deserialization.prepare_datasets(
         source,
@@ -127,9 +130,9 @@ def main(
         tf.keras.callbacks.TensorBoard(log_dir=tensorboard_log_dir, histogram_freq=1),
         tf.keras.callbacks.EarlyStopping(patience=25, verbose=2),
         tf.keras.callbacks.ReduceLROnPlateau(verbose=1, patience=10, factor=0.5),
-        tf.keras.callbacks.ModelCheckpoint(filepath=os.path.join(output, timestamp, "model.best"), save_best_only=True),
+        tf.keras.callbacks.ModelCheckpoint(filepath=os.path.join(output, timestamp, "model.best.keras"), save_best_only=True),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(output, timestamp, "checkpoints", "model.{epoch:02d}")
+            filepath=os.path.join(output, timestamp, "checkpoints", "model.{epoch:02d}.keras")
         ),
         VisualizeCallback(
             train_visualization_ds,
@@ -150,7 +153,7 @@ def main(
     model.compile(
         loss=loss,
         optimizer=tf.keras.optimizers.Adam(learning_rate),
-        sample_weight_mode={"contour": None, "note": None, "onset": None},
+        # sample_weight_mode={"contour": None, "note": None, "onset": None},
     )
 
     logging.info("--- Model Training specs ---")
@@ -277,7 +280,7 @@ def console_entry_point() -> None:
         args.size_evaluation_callback_datasets,
         datasets_to_use,
         dataset_sampling_frequency,
-        args.dont_sonify,
+        args.no_sonify,
         args.no_contours,
         args.weighted_onset_loss,
         args.positive_onset_weight,

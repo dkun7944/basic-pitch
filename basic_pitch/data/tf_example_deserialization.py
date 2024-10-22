@@ -310,13 +310,13 @@ def combine_transcription_examples(
         {
             "onset": tf.math.reduce_max(target["onset"], axis=0),
             "contour": tf.math.reduce_max(target["contour"], axis=0),
-            "note": tf.math.reduce_max(target["note"], axis=0),
+            "note": tf.math.reduce_max(target["note"], axis=0)
         },
         # weights are the minimum - if an annotation is missing in one, we should set the weights to zero
         {
             "onset": tf.math.reduce_min(w["onset"], axis=0),
             "contour": tf.math.reduce_min(w["contour"], axis=0),
-            "note": tf.math.reduce_min(w["note"], axis=0),
+            "note": tf.math.reduce_min(w["note"], axis=0)
         },
     )
 

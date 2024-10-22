@@ -23,6 +23,9 @@ import warnings
 import tensorflow as tf
 import numpy as np
 from typing import Any, List, Optional, Tuple, Union
+from basic_pitch.constants import (
+    FFT_HOP,
+)
 
 import scipy.signal
 
@@ -113,7 +116,7 @@ def get_early_downsample_params(
         earlydownsample = True
         early_downsample_filter = create_lowpass_filter(
             band_center=1 / downsample_factor,
-            kernel_length=256,
+            kernel_length=FFT_HOP,
             transition_bandwidth=0.03,
             dtype=dtype,
         )
@@ -141,61 +144,80 @@ def get_window_dispatch(window: Union[str, Tuple[str, float]], N: int, fftbins: 
 
 
 def create_cqt_kernels(
-    Q: float,
-    fs: float,
-    fmin: float,
-    n_bins: int = 84,
-    bins_per_octave: int = 12,
-    norm: int = 1,
-    window: str = "hann",
-    fmax: Optional[float] = None,
-    topbin_check: bool = True,
-) -> Tuple[np.array, int, np.array, np.array]:
+    Q,
+    fs,
+    fmin,
+    n_bins=84,
+    bins_per_octave=12,
+    norm=1,
+    window="hann",
+    fmax=None,
+    topbin_check=True,
+    gamma=0,
+    pad_fft=True
+):
     """
     Automatically create CQT kernels in time domain
     """
 
     fftLen = 2 ** next_power_of_2(np.ceil(Q * fs / fmin))
+    # minWin = 2**nextpow2(np.ceil(Q * fs / fmax))
 
-    if (fmax is not None) and (n_bins is None):
-        n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))  # Calculate the number of bins
-        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / float(bins_per_octave))
+    if (fmax != None) and (n_bins == None):
+        n_bins = np.ceil(
+            bins_per_octave * np.log2(fmax / fmin)
+        )  # Calculate the number of bins
+        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.double(bins_per_octave))
 
-    elif (fmax is None) and (n_bins is not None):
-        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / float(bins_per_octave))
+    elif (fmax == None) and (n_bins != None):
+        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.double(bins_per_octave))
 
     else:
         warnings.warn("If fmax is given, n_bins will be ignored", SyntaxWarning)
-        n_bins = np.ceil(bins_per_octave * np.log2(fmax / fmin))  # Calculate the number of bins
-        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / float(bins_per_octave))
+        n_bins = np.ceil(
+            bins_per_octave * np.log2(fmax / fmin)
+        )  # Calculate the number of bins
+        freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.double(bins_per_octave))
 
-    if np.max(freqs) > fs / 2 and topbin_check is True:
+    if np.max(freqs) > fs / 2 and topbin_check == True:
         raise ValueError(
-            "The top bin {}Hz has exceeded the Nyquist frequency, please reduce the n_bins".format(np.max(freqs))
+            "The top bin {}Hz has exceeded the Nyquist frequency, \
+                          please reduce the n_bins".format(
+                np.max(freqs)
+            )
         )
+
+    alpha = 2.0 ** (1.0 / bins_per_octave) - 1.0
+    lengths = np.ceil(Q * fs / (freqs + gamma / alpha))
+    
+    # get max window length depending on gamma value
+    max_len = int(max(lengths))
+    fftLen = int(2 ** (np.ceil(np.log2(max_len))))
 
     tempKernel = np.zeros((int(n_bins), int(fftLen)), dtype=np.complex64)
+    specKernel = np.zeros((int(n_bins), int(fftLen)), dtype=np.complex64)
 
-    lengths = np.ceil(Q * fs / freqs)
     for k in range(0, int(n_bins)):
         freq = freqs[k]
-        _l = np.ceil(Q * fs / freq)
+        l = lengths[k]
 
-        # Centering the kernels, pad more zeros on RHS
-        start = int(np.ceil(fftLen / 2.0 - _l / 2.0)) - int(_l % 2)
+        # Centering the kernels
+        if l % 2 == 1:  # pad more zeros on RHS
+            start = int(np.ceil(fftLen / 2.0 - l / 2.0)) - 1
+        else:
+            start = int(np.ceil(fftLen / 2.0 - l / 2.0))
 
-        sig = (
-            get_window_dispatch(window, int(_l), fftbins=True)
-            * np.exp(np.r_[-_l // 2 : _l // 2] * 1j * 2 * np.pi * freq / fs)
-            / _l
-        )
+        window_dispatch = get_window_dispatch(window, int(l), fftbins=True)
+        sig = window_dispatch * np.exp(np.r_[-l // 2 : l // 2] * 1j * 2 * np.pi * freq / fs) / l
 
         if norm:  # Normalizing the filter # Trying to normalize like librosa
-            tempKernel[k, start : start + int(_l)] = sig / np.linalg.norm(sig, norm)
+            tempKernel[k, start : start + int(l)] = sig / np.linalg.norm(sig, norm)
         else:
-            tempKernel[k, start : start + int(_l)] = sig
+            tempKernel[k, start : start + int(l)] = sig
+        # specKernel[k, :] = fft(tempKernel[k])
 
-    return tempKernel, fftLen, lengths, freqs
+    # return specKernel[:,:fftLen//2+1], fftLen, torch.tensor(lenghts).float()
+    return tempKernel, fftLen, tf.convert_to_tensor(lengths, dtype=tf.float32), freqs
 
 
 def get_cqt_complex(
@@ -210,6 +232,7 @@ def get_cqt_complex(
     [2] Brown, Judith C.C. and Miller Puckette. “An efficient algorithm for the calculation of
     a constant Q transform.” (1992)."""
 
+    original_dtype = x.dtype  # Preserve the original dtype of x
     try:
         x = padding(x)  # When center is True, we need padding at the beginning and ending
     except Exception:
@@ -219,6 +242,8 @@ def get_cqt_complex(
             UserWarning,
         )
         x = tf.pad(x, (cqt_kernels_real.shape[-1] // 2, cqt_kernels_real.shape[-1] // 2))
+    x = tf.cast(x, original_dtype)  # Ensure dtype of x doesn't change
+        
     CQT_real = tf.transpose(
         tf.nn.conv1d(
             tf.transpose(x, [0, 2, 1]),
@@ -469,8 +494,9 @@ class CQT2010v2(tf.keras.layers.Layer):
         trainable: bool = False,
         output_format: str = "Magnitude",
         match_torch_exactly: bool = True,
+        dtype: tf.DType = tf.float32,
     ):
-        super().__init__()
+        super().__init__(dtype=dtype)
 
         self.sample_rate: Union[float, int] = sr
         self.hop_length = hop_length
@@ -516,7 +542,7 @@ class CQT2010v2(tf.keras.layers.Layer):
         # This will be used to calculate filter_cutoff and creating CQT kernels
         Q = float(self.filter_scale) / (2 ** (1 / self.bins_per_octave) - 1)
 
-        self.lowpass_filter = create_lowpass_filter(band_center=0.5, kernel_length=256, transition_bandwidth=0.001)
+        self.lowpass_filter = create_lowpass_filter(band_center=0.9, kernel_length=FFT_HOP, transition_bandwidth=0.001, dtype=self.dtype)
 
         # Calculate num of filter requires for the kernel
         # n_octaves determines how many resampling requires for the CQT
@@ -602,7 +628,7 @@ class CQT2010v2(tf.keras.layers.Layer):
             raise ValueError(f"Input shape must be rank <= 3, found shape {input_shape}")
 
     def call(self, x: tf.Tensor) -> tf.Tensor:
-        x = self.reshape_input(x)  # type: ignore
+        x = tf.cast(self.reshape_input(x), self.dtype)  # type: ignore
 
         if self.earlydownsample is True:
             x = downsampling_by_n(x, self.early_downsample_filter, self.downsample_factor, self.match_torch_exactly)
@@ -651,3 +677,213 @@ class CQT2010v2(tf.keras.layers.Layer):
 
 
 CQT = CQT2010v2
+
+class VQT(tf.keras.layers.Layer):
+    def __init__(
+        self,
+        sr: int = 22050,
+        hop_length: int = 512,
+        fmin: float = 32.70,
+        fmax: Optional[float] = None,
+        n_bins: int = 84,
+        filter_scale: int = 1,
+        bins_per_octave: int = 12,
+        norm: bool = True,
+        basis_norm: int = 1,
+        gamma: float = 10.0,
+        window: str = "hann",
+        pad_mode: str = "reflect",
+        earlydownsample: bool = True,
+        trainable: bool = False,
+        output_format: str = "Magnitude",
+        verbose: bool = True,
+        match_torch_exactly: bool = True,
+        dtype: tf.DType = tf.float32,
+    ):
+        super().__init__(dtype=dtype)
+
+        self.fmin = fmin
+        self.fmax = fmax
+        self.norm = norm
+        self.hop_length = hop_length
+        self.pad_mode = pad_mode
+        self.n_bins = n_bins
+        self.earlydownsample = earlydownsample
+        self.trainable = trainable
+        self.output_format = output_format
+        self.filter_scale = filter_scale
+        self.bins_per_octave = bins_per_octave
+        self.sr = sr
+        self.gamma = tf.Variable(gamma, trainable=trainable, dtype=dtype)
+        self.basis_norm = basis_norm
+        self.window = window
+        self.verbose = verbose
+        self.match_torch_exactly = match_torch_exactly
+
+    def get_config(self) -> Any:
+        config = super().get_config().copy()
+        config.update(
+            {
+                "fmin": self.fmin,
+                "fmax": self.fmax,
+                "norm": self.norm,
+                "hop_length": self.hop_length,
+                "pad_mode": self.pad_mode,
+                "n_bins": self.n_bins,
+                "earlydownsample": self.earlydownsample,
+                "trainable": self.trainable,
+                "output_format": self.output_format,
+                "filter_scale": self.filter_scale,
+                "bins_per_octave": self.bins_per_octave,
+                "sr": self.sr,
+                "gamma": self.gamma.numpy(),
+                "basis_norm": self.basis_norm,
+                "window": self.window,
+                "verbose": self.verbose,
+                "match_torch_exactly": self.match_torch_exactly,
+            }
+        )
+        return config
+
+    def build(self, input_shape: tf.TensorShape) -> None:
+        Q = float(self.filter_scale) / (2 ** (1 / self.bins_per_octave) - 1)
+
+        if self.verbose:
+            print("Creating low pass filter ...", end="\r")
+        self.lowpass_filter = create_lowpass_filter(
+            band_center=0.50, kernel_length=256, transition_bandwidth=0.001
+        )
+        if self.verbose:
+            print("Low pass filter created")
+
+        n_filters = min(self.bins_per_octave, self.n_bins)
+        self.n_filters = n_filters
+        self.n_octaves = int(np.ceil(float(self.n_bins) / self.bins_per_octave))
+        if self.verbose:
+            print("num_octave = ", self.n_octaves)
+
+        self.fmin_t = self.fmin * 2 ** (self.n_octaves - 1)
+        remainder = self.n_bins % self.bins_per_octave
+
+        if remainder == 0:
+            fmax_t = self.fmin_t * 2 ** ((self.bins_per_octave - 1) / self.bins_per_octave)
+        else:
+            fmax_t = self.fmin_t * 2 ** ((remainder - 1) / self.bins_per_octave)
+
+        self.fmin_t = fmax_t / 2 ** (1 - 1 / self.bins_per_octave)
+        if fmax_t > self.sr / 2:
+            raise ValueError(
+                "The top bin {}Hz has exceeded the Nyquist frequency, please reduce the n_bins".format(fmax_t)
+            )
+
+        if self.earlydownsample:
+            if self.verbose:
+                print("Creating early downsampling filter ...", end="\r")
+            sr, self.hop_length, self.downsample_factor, early_downsample_filter, self.earlydownsample = get_early_downsample_params(
+                self.sr, self.hop_length, fmax_t, Q, self.n_octaves, self.dtype
+            )
+            self.early_downsample_filter = early_downsample_filter
+            if self.verbose:
+                print("Early downsampling filter created")
+        else:
+            self.downsample_factor = 1.0
+
+        alpha = 2.0 ** (1.0 / self.bins_per_octave) - 1.0
+        freqs = self.fmin * 2.0 ** (np.arange(self.n_bins) / np.double(self.bins_per_octave))
+        self.frequencies = freqs
+        self.lengths = np.ceil(Q * self.sr / (freqs + self.gamma / alpha))
+
+        max_len = int(max(self.lengths))
+        self.n_fft = int(2 ** (np.ceil(np.log2(max_len))))
+
+        my_sr = self.sr
+        for i in range(self.n_octaves):
+            if i > 0:
+                my_sr /= 2
+
+            Q = float(self.filter_scale) / (2 ** (1 / self.bins_per_octave) - 1)
+
+            basis, self.n_fft, lengths, _ = create_cqt_kernels(
+                Q,
+                my_sr,
+                self.fmin_t * 2 ** -i,
+                self.n_filters,
+                self.bins_per_octave,
+                norm=self.basis_norm,
+                topbin_check=False,
+                gamma=self.gamma,
+            )
+
+            cqt_kernels_real = tf.expand_dims(basis.real.astype(self.dtype), 1)
+            cqt_kernels_imag = tf.expand_dims(basis.imag.astype(self.dtype), 1)
+
+            setattr(self, "cqt_kernels_real_{}".format(i), cqt_kernels_real)
+            setattr(self, "cqt_kernels_imag_{}".format(i), cqt_kernels_imag)
+
+        rank = len(input_shape)
+        if rank == 2:
+            self.reshape_input = lambda x: x[:, None, :]
+        elif rank == 1:
+            self.reshape_input = lambda x: x[None, None, :]
+        elif rank == 3:
+            self.reshape_input = lambda x: x
+        else:
+            raise ValueError(f"Input shape must be rank <= 3, found shape {input_shape}")
+
+    def call(self, x, output_format=None, normalization_type="librosa"):
+        output_format = output_format or self.output_format
+
+        x = tf.cast(self.reshape_input(x), self.dtype)
+
+        if self.earlydownsample:
+            x = downsampling_by_n(x, self.early_downsample_filter, self.downsample_factor, self.match_torch_exactly)
+
+        hop = self.hop_length
+        vqt = []
+
+        x_down = x
+        my_sr = self.sr
+
+        for i in range(self.n_octaves):
+            if i > 0:
+                x_down = downsampling_by_n(x_down, self.lowpass_filter, 2, self.match_torch_exactly)
+                hop //= 2
+            else:
+                x_down = x
+
+            pad_length = int(getattr(self, "cqt_kernels_real_{}".format(i)).shape[-1] // 2)
+            if self.pad_mode == "constant":
+                my_padding = ConstantPad1D(pad_length, 0)
+            elif self.pad_mode == "reflect":
+                my_padding = ReflectionPad1D(pad_length)
+
+            cur_vqt = get_cqt_complex(
+                x_down,
+                getattr(self, "cqt_kernels_real_{}".format(i)),
+                getattr(self, "cqt_kernels_imag_{}".format(i)),
+                hop,
+                my_padding,
+            )
+            vqt.insert(0, cur_vqt)
+
+        vqt = tf.concat(vqt, axis=1)
+        vqt = vqt[:, -self.n_bins :, :]
+        vqt = vqt * self.downsample_factor
+
+        if normalization_type == "librosa":
+            vqt = vqt * tf.math.sqrt(tf.cast(self.lengths[:, None, None], self.dtype))
+        elif normalization_type == "convolutional":
+            pass
+        elif normalization_type == "wrap":
+            vqt *= 2
+        else:
+            raise ValueError("The normalization_type %r is not part of our current options." % normalization_type)
+
+        if output_format == "Magnitude":
+            return tf.transpose(tf.math.sqrt(tf.math.reduce_sum(tf.math.pow(vqt, 2), axis=-1)), [0, 2, 1])
+        elif output_format == "Complex":
+            return vqt
+        elif output_format == "Phase":
+            phase_real = tf.math.cos(tf.math.atan2(vqt[:, :, :, 1], vqt[:, :, :, 0]))
+            phase_imag = tf.math.sin(tf.math.atan2(vqt[:, :, :, 1], vqt[:, :, :, 0]))
+            return tf.stack((phase_real, phase_imag), axis=-1)

@@ -43,7 +43,7 @@ class VisualizeCallback(tf.keras.callbacks.Callback):
         validation_ds: tf.data.Dataset,
         tensorboard_dir: str,
         sonify: bool,
-        contours: bool,
+        contours: bool
     ):
         super().__init__()
         self.train_iter = iter(train_ds)
@@ -72,4 +72,5 @@ class VisualizeCallback(tf.keras.callbacks.Callback):
                 epoch,
                 sonify=self.sonify,
                 contours=self.contours,
+                model=self.model,
             )

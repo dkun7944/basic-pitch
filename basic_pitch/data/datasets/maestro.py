@@ -26,6 +26,13 @@ from typing import Any, Dict, List, TextIO, Tuple
 import apache_beam as beam
 import mirdata
 
+import os
+import sys
+
+# Add the parent directory of 'data' to the Python path
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(root_dir)
+
 from basic_pitch.data import commandline, pipeline
 
 
@@ -40,42 +47,51 @@ def read_in_chunks(file_object: TextIO, chunk_size: int = 1024) -> Any:
 
 
 class MaestroInvalidTracks(beam.DoFn):
-    DOWNLOAD_ATTRIBUTES = ["audio_path"]
-
-    def __init__(self, source: str) -> None:
-        self.source = source
-
-    def setup(self) -> None:
-        # Oddly enough we dont want to include the gcs bucket uri.
-        # Just the path within the bucket
-        self.maestro_remote = mirdata.initialize("maestro", data_home=self.source)
-        self.filesystem = beam.io.filesystems.FileSystems()
-
     def process(self, element: Tuple[str, str], *args: Tuple[Any, Any], **kwargs: Dict[str, Any]) -> Any:
-        import tempfile
-        import sox
-
         track_id, split = element
-        logging.info(f"Processing (track_id, split): ({track_id}, {split})")
-
-        track_remote = self.maestro_remote.track(track_id)
-        with tempfile.TemporaryDirectory() as local_tmp_dir:
-            maestro_local = mirdata.initialize("maestro", local_tmp_dir)
-            track_local = maestro_local.track(track_id)
-
-            for attribute in self.DOWNLOAD_ATTRIBUTES:
-                source = getattr(track_remote, attribute)
-                destination = getattr(track_local, attribute)
-                os.makedirs(os.path.dirname(destination), exist_ok=True)
-                with self.filesystem.open(source) as s, open(destination, "wb") as d:
-                    for piece in read_in_chunks(s):
-                        d.write(piece)
-
-            # 15 minutes * 60 seconds/minute
-            if sox.file_info.duration(track_local.audio_path) >= 15 * 60:
-                return None
-
         yield beam.pvalue.TaggedOutput(split, track_id)
+
+# class MaestroInvalidTracks(beam.DoFn):
+#     DOWNLOAD_ATTRIBUTES = ["audio_path"]
+
+#     def __init__(self, source: str) -> None:
+#         self.source = source
+
+#     def setup(self) -> None:
+#         # Oddly enough we dont want to include the gcs bucket uri.
+#         # Just the path within the bucket
+#         self.maestro_remote = mirdata.initialize("maestro", data_home=self.source)
+#         self.filesystem = beam.io.filesystems.FileSystems()
+
+#     def process(self, element: Tuple[str, str], *args: Tuple[Any, Any], **kwargs: Dict[str, Any]) -> Any:
+#         import tempfile
+#         import sox
+
+#         track_id, split = element
+#         logging.info(f"Processing (track_id, split): ({track_id}, {split})")
+
+#         track_remote = self.maestro_remote.track(track_id)
+#         with tempfile.TemporaryDirectory() as local_tmp_dir:
+#             maestro_local = mirdata.initialize("maestro", local_tmp_dir)
+#             track_local = maestro_local.track(track_id)
+
+#             for attribute in self.DOWNLOAD_ATTRIBUTES:
+#                 source = getattr(track_remote, attribute)
+#                 destination = getattr(track_local, attribute)
+#                 os.makedirs(os.path.dirname(destination), exist_ok=True)
+#                 try:
+#                     with self.filesystem.open(source) as s, open(destination, "wb") as d:
+#                         for piece in read_in_chunks(s):
+#                             d.write(piece)
+#                 except FileNotFoundError:
+#                     logging.warning(f"File not found: {source}")
+#                     continue
+
+#             # 15 minutes * 60 seconds/minute
+#             if sox.file_info.duration(track_local.audio_path) >= 15 * 60:
+#                 return None
+
+#         yield beam.pvalue.TaggedOutput(split, track_id)
 
 
 class MaestroToTfExample(beam.DoFn):
@@ -181,7 +197,7 @@ def create_input_data(source: str) -> List[Tuple[str, str]]:
         ) as s, open(os.path.join(tmpdir, metadata_path), "wb") as d:
             d.write(s.read())
 
-        return [(track_id, track.split) for track_id, track in maestro.load_tracks().items()]
+        return [(track_id, track.split or "") for track_id, track in maestro.load_tracks().items()]
 
 
 def main(known_args: argparse.Namespace, pipeline_args: List[str]) -> None:
@@ -207,7 +223,7 @@ def main(known_args: argparse.Namespace, pipeline_args: List[str]) -> None:
         pipeline_options,
         pipeline_args,
         input_data,
-        MaestroToTfExample(known_args.source, download=True),
+        MaestroToTfExample(known_args.source, download=False),
         MaestroInvalidTracks(known_args.source),
         destination,
         known_args.batch_size,

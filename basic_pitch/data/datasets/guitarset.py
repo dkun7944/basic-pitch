@@ -18,6 +18,7 @@
 import argparse
 import logging
 import os
+import sys
 import random
 import time
 
@@ -25,6 +26,8 @@ from typing import Any, List, Dict, Tuple, Optional
 
 import apache_beam as beam
 import mirdata
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
 from basic_pitch.data import commandline, pipeline
 

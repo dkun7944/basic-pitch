@@ -21,6 +21,7 @@ import sys
 import logging
 from datetime import datetime, timezone
 from typing import List
+from tensorflow.keras import mixed_precision
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -89,8 +90,11 @@ def main(
     logging.info(f"weighted_onset_loss: {weighted_onset_loss}")
     logging.info(f"positive_onset_weight: {positive_onset_weight}")
 
+    # policy = mixed_precision.Policy('mixed_float16')
+    # mixed_precision.set_global_policy(policy)
+
     # model
-    model = models.model(no_contours=no_contours)
+    model = models.model_v2()
     input_shape = list(model.input_shape)
     if input_shape[0] is None:
         input_shape[0] = batch_size
@@ -128,8 +132,8 @@ def main(
     tensorboard_log_dir = os.path.join(output, timestamp, "tensorboard")
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=tensorboard_log_dir, histogram_freq=1),
-        tf.keras.callbacks.EarlyStopping(patience=25, verbose=2),
-        tf.keras.callbacks.ReduceLROnPlateau(verbose=1, patience=10, factor=0.5),
+        tf.keras.callbacks.EarlyStopping(patience=100, verbose=2),
+        tf.keras.callbacks.ReduceLROnPlateau(verbose=1, patience=20, factor=0.7, min_lr=1e-6),
         tf.keras.callbacks.ModelCheckpoint(filepath=os.path.join(output, timestamp, "model.best.keras"), save_best_only=True),
         tf.keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(output, timestamp, "checkpoints", "model.{epoch:02d}.keras")
@@ -139,20 +143,23 @@ def main(
             validation_visualization_ds,
             tensorboard_log_dir,
             not no_sonify,
-            not no_contours,
+            not no_contours
         ),
     ]
 
-    # if no_contours:
-    #     loss = models.loss_no_contour(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
-    # else:
-    #     loss = models.loss(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
-    loss = models.loss(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
+    if no_contours:
+        loss = models.loss_no_contour(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
+    else:
+        loss = models.loss(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
+    # loss = models.loss(weighted=weighted_onset_loss, positive_weight=positive_onset_weight)
+
+    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate, clipnorm=1.0)
+    optimizer = mixed_precision.LossScaleOptimizer(optimizer)
 
     # train
     model.compile(
         loss=loss,
-        optimizer=tf.keras.optimizers.Adam(learning_rate),
+        optimizer=optimizer,
         # sample_weight_mode={"contour": None, "note": None, "onset": None},
     )
 
@@ -161,6 +168,7 @@ def main(
     logging.info(f"  validation_ds: {validation_ds}")
     model.summary()
 
+    
     model.fit(
         train_ds,
         epochs=epochs,
@@ -240,13 +248,13 @@ def console_entry_point() -> None:
     parser.add_argument(
         "--weighted-onset-loss",
         action="store_true",
-        default=False,
+        default=True,
         help="if given, trains onsets with a class-weighted loss",
     )
     parser.add_argument(
         "--positive-onset-weight",
         type=float,
-        default=0.5,
+        default=0.95,
         help="Positive class onset weight. Only applies when weignted onset loss is true.",
     )
 
@@ -256,6 +264,10 @@ def console_entry_point() -> None:
         for dataset in DATASET_SAMPLING_FREQUENCY.keys()
         if getattr(args, dataset.lower().replace("-", "_"))
     ]
+
+    print("Datasets to use:", datasets_to_use)
+
+
     dataset_sampling_frequency = np.array(
         [
             frequency

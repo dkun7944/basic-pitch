@@ -20,6 +20,17 @@ import tensorflow as tf
 import mir_eval
 import librosa
 
+from basic_pitch import nn
+from basic_pitch.constants import (
+    ANNOTATIONS_BASE_FREQUENCY,
+    ANNOTATIONS_N_SEMITONES,
+    AUDIO_N_SAMPLES,
+    AUDIO_SAMPLE_RATE,
+    CONTOURS_BINS_PER_SEMITONE,
+    FFT_HOP,
+    N_FREQ_BINS_CONTOURS,
+)
+
 from typing import Dict
 
 from basic_pitch.constants import (
@@ -50,19 +61,6 @@ TIMES = librosa.core.frames_to_time(
     hop_length=AUDIO_SAMPLE_RATE // ANNOTATIONS_FPS,
 )
 
-
-def get_input_model() -> tf.keras.Model:
-    """define a model that generates the CQT (Constant-Q Transform) of input audio"""
-    inputs = tf.keras.Input(shape=(AUDIO_N_SAMPLES, 1))  # (batch, time, ch)
-    x = models.get_cqt(inputs, 1, False)
-    model = tf.keras.Model(inputs=inputs, outputs=x)
-    model.compile()
-    return model
-
-
-INPUT_MODEL = get_input_model()
-
-
 def visualize_transcription(
     file_writer: tf.summary.SummaryWriter,
     stage: str,
@@ -73,6 +71,7 @@ def visualize_transcription(
     step: int,
     sonify: bool = True,
     contours: bool = True,
+    model: tf.keras.Model = None,
 ) -> None:
     """Create tf.summaries of transcription outputs to be plotted in tensorboard
 
@@ -88,6 +87,8 @@ def visualize_transcription(
         contours: plot note contours
     """
     with file_writer.as_default():
+        gamma = model.get_layer("vqt").gamma
+
         # create audio player
         tf.summary.audio(
             f"{stage}/audio/inputs",
@@ -99,7 +100,7 @@ def visualize_transcription(
         # plot mel spectrograms
         tf.summary.image(
             f"{stage}/audio/input",
-            _audio_input(inputs),
+            tf.image.flip_left_right(tf.image.rot90(models.get_vqt(inputs, 8, True), k=3)),
             step=step,
             max_outputs=MAX_OUTPUTS,
         )
@@ -164,7 +165,10 @@ def visualize_transcription(
                 sample_rate=SONIFY_FS,
                 step=step,
                 max_outputs=MAX_OUTPUTS,
-            )
+            )  
+
+        # plot trainable parameter gamma from models
+        tf.summary.scalar(f"{stage}/gamma", gamma, step=step)
 
         # plot loss
         tf.summary.scalar(f"{stage}/loss", loss, step=step)
@@ -201,20 +205,6 @@ def _array_to_sonification(array: tf.Tensor, max_outputs: int, clip: float = 0.3
             break
 
     return tf.convert_to_tensor(np.array(audio_list), dtype=tf.float32)
-
-
-def _audio_input(audio: tf.Tensor) -> tf.Tensor:
-    """Gets the Constant-Q transform of audio input using the input model defined above.
-
-    Args:
-        audio: the audio signal to process
-
-    Returns:
-        constant-q transform of the audio (3 bins per semitone, ~11ms hop size.)
-    """
-    audio_in = INPUT_MODEL(audio)
-    return tf.transpose(audio_in, perm=[0, 2, 1, 3])
-
 
 def _array_to_image(array: tf.Tensor) -> tf.Tensor:
     """Convert a time-frequency array shape=(batch, time, frequency) to

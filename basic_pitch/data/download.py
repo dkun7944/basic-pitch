@@ -17,12 +17,12 @@
 import argparse
 import logging
 
-from basic_pitch.data import commandline
-from basic_pitch.data.datasets.guitarset import main as guitarset_main
-from basic_pitch.data.datasets.ikala import main as ikala_main
-from basic_pitch.data.datasets.maestro import main as maestro_main
-from basic_pitch.data.datasets.medleydb_pitch import main as medleydb_pitch_main
-from basic_pitch.data.datasets.slakh import main as slakh_main
+import commandline
+from datasets.guitarset import main as guitarset_main
+from datasets.ikala import main as ikala_main
+from datasets.maestro import main as maestro_main
+from datasets.medleydb_pitch import main as medleydb_pitch_main
+from datasets.slakh import main as slakh_main
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)

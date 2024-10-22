@@ -45,7 +45,9 @@ ANNOT_N_FRAMES = ANNOTATIONS_FPS * AUDIO_WINDOW_LENGTH
 AUDIO_N_SAMPLES = AUDIO_SAMPLE_RATE * AUDIO_WINDOW_LENGTH - FFT_HOP
 
 DATASET_SAMPLING_FREQUENCY = {
-    "MAESTRO": 5,
+    "MAESTRO": 2,
+    "maestro-imagiro": 2,
+    "maestro-saw": 2,
     "GuitarSet": 2,
     "MedleyDB-Pitch": 2,
     "iKala": 2,
